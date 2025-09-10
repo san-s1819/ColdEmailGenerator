@@ -1,0 +1,11 @@
+The user has a list of hiring managers and companies in an excel file 
+
+Read the excel file and resume (txt) format
+
+For each entry in the input file, the script first uses the SERP API to browse the LinkedIn profile and company URLs.
+
+Next, Crawl4AI scrapes the content from these URLs.
+
+Using the resume data and scraped content, the LLM uses this information and a pre-defined prompt to generate the customized LinkedIn connection request and cold email.
+
+The generated LinkedIn connection request and cold email will be appended to the excel file at the end.

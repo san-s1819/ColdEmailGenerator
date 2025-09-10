@@ -1,0 +1,10 @@
+pandas
+openpyxl
+crawl4ai
+python-dotenv
+fireworks-ai
+serpapi
+google-search-results
+pydantic
+playwright install 
+litellm[proxy]
