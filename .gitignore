@@ -1,3 +1,37 @@
+# Environment and API keys
 .env
+.env.local
+.env.*.local
+
+# Personal data files
 Resumeforcoldemail.txt
+Companies_Hiring_Tech_Roles.xlsx
 companies_hiring_tech_roles.xlsx
+
+# Generated output files (contain personal/company data)
+*.xlsx
+enhanced_output.xlsx
+output_*.xlsx
+
+# Cache files (contain scraped company data)
+company_cache.txt
+company_cache.backup.txt
+*.cache
+
+# Log files (may contain sensitive data)
+*.log
+outreach_workflow.log
+
+# Python virtual environment
+venv\
+__pycache__\
+*.pyc
+*.pyo
+
+# Backup files
+*.backup
+*.bak
+
+# Temporary files
+*.tmp
+*.temp

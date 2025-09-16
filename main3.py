@@ -45,26 +45,24 @@ class CompanySummary(BaseModel):
 
 class OutreachGenerator:
     def __init__(self):
-        # print("  Initializing OutreachGenerator...")
-        # print("  Loading API keys...")
+        print("  Initializing OutreachGenerator...")
+        print("  Loading API keys...")
         self.fireworks_api_key = os.getenv("FIREWORKS_API_KEY")
         self.serpapi_key = os.getenv("SERPAPI_KEY")
         
         if not self.fireworks_api_key:
             raise ValueError("FIREWORKS_API_KEY not found in environment variables")
-        if not self.serpapi_key:
-            raise ValueError("SERPAPI_KEY not found in environment variables")
-        # print("  ✅ API keys loaded")
+        print("  ✅ API keys loaded")
             
-        # print("  Setting up Fireworks client...")
+        print("  Setting up Fireworks client...")
         # Initialize clients
         fireworks.client.api_key = self.fireworks_api_key
-        # print("  ✅ Fireworks client configured")
+        print("  ✅ Fireworks client configured")
         
-        # print("  Loading company cache...")
+        print("  Loading company cache...")
         # Cache management
         self.company_cache = self.load_company_cache()
-        # print(f"  ✅ Loaded {len(self.company_cache)} cached companies")
+        print(f"  ✅ Loaded {len(self.company_cache)} cached companies")
         
         # Rate limiting
         self.last_api_call = 0
@@ -117,47 +115,6 @@ class OutreachGenerator:
             logger.error(f"Error saving company cache: {e}")
 
 
-    @backoff.on_exception(backoff.expo, Exception, max_tries=3, max_time=60)
-    def get_person_info(self, query: str) -> str:
-        """Get person information from Google search with retry logic."""
-        if not query.strip():
-            return "No query provided."
-            
-        try:
-            # Rate limiting
-            self._apply_rate_limit()
-            
-            search = GoogleSearch({
-                "engine": "google",
-                "api_key": self.serpapi_key,
-                "q": f"{query}",  # firstname lastname company - broader search
-                "num": 5
-            })
-            
-            results_dict = search.get_dict()
-            
-            if 'organic_results' not in results_dict:
-                logger.warning(f"No organic results found for LinkedIn search: {query}")
-                return "No LinkedIn profile found."
-            
-            results = results_dict["organic_results"]
-            person_info = []
-            
-            for result in results:
-                title = result.get('title', '').strip()
-                snippet = result.get('snippet', '').strip()
-                if title and snippet:
-                    person_info.append(f"{title}: {snippet}")
-            
-            if person_info:
-                return "\n".join(person_info)
-            else:
-                logger.warning(f"No information found for: {query}")
-                return "No information found."
-                
-        except Exception as e:
-            logger.error(f"Error getting LinkedIn snippet for {query}: {e}")
-            raise
 
     def _apply_rate_limit(self) -> None:
         """Apply rate limiting between API calls"""
@@ -171,33 +128,30 @@ class OutreachGenerator:
         self.last_api_call = time.time()
 
     def get_prompt(self, resume: str, lead_title: str, company_name: str, 
-                   job_title: str, person_info: str, company_info: str) -> str:
-        """Generate improved prompt for the LLM with better structure."""
+                    company_info: str) -> str:
+        """Generate improved prompt for the LLM focused on company info."""
         # Truncate resume to first 500 characters to save tokens
         resume_short = resume[:500] + "..." if len(resume) > 500 else resume
         
-        prompt = f"""Create personalized outreach for {job_title} at {company_name}.
+        prompt = f"""Create outreach asking about open opportunities at {company_name}.
 
 MY SKILLS: {resume_short}
-
 CONTACT: {lead_title}
 COMPANY: {company_info}
-PERSON: {person_info}
 
-Write:
-1. LinkedIn request (<300 chars, reference their work)
-2. Cold email (subject + 150-200 words, personalized)
+Create:
+1. LinkedIn request (<300 chars, ask about openings, reference company)
+2. Cold email with this exact structure:
+   - 2-3 lines of pleasantries and introduction
+   - 3 achievements from my resume that match the company's business
+   - "Looking forward to hearing from you, attaching my resume for your reference./ ask for an short 15 min call"
 
-Format:
-LINKEDIN_REQUEST_START
-[request text]
-LINKEDIN_REQUEST_END
-
-EMAIL_START
-Subject: [subject]
-
-[email body]
-EMAIL_END"""
+Return ONLY valid JSON:
+{{
+    "linkedin_request": "your linkedin message here",
+    "email_subject": "your email subject here", 
+    "email_body": "your email body here"
+}}"""
         return prompt
 
     @backoff.on_exception(backoff.expo, Exception, max_tries=3)
@@ -249,7 +203,6 @@ EMAIL_END"""
             only_text=True,  # Focus on text content only
             exclude_external_links=True,  # Remove external navigation
             exclude_social_media_links=True,  # Remove social media buttons
-            #page_timeout=30000,  # 30 seconds timeout
         )#
         
         async with AsyncWebCrawler(config=BrowserConfig(headless=True,verbose=True)) as crawler:
@@ -297,52 +250,60 @@ EMAIL_END"""
             )
             
             generated_text = response.choices[0].message.content
+            print("summary is: ", generated_text)
             return self._parse_generated_content(generated_text)
             
         except Exception as e:
             logger.error(f"Error generating content: {e}")
             raise
 
-    def _parse_generated_content(self, generated_text: str) -> tuple[str, str]:
-        """Parse generated content to extract LinkedIn request and email."""
+    def _extract_json_from_markdown(self, text: str) -> str:
+        """Extract JSON content from markdown code blocks."""
         try:
-            # Extract LinkedIn request
-            linkedin_match = re.search(
-                r'LINKEDIN_REQUEST_START\s*(.*?)\s*LINKEDIN_REQUEST_END', 
-                generated_text, 
-                re.DOTALL
-            )
-            linkedin_request = linkedin_match.group(1).strip() if linkedin_match else "Failed to parse LinkedIn request"
+            # Try to extract JSON from ```json code blocks
+            json_match = re.search(r'```json\s*(.*?)\s*```', text, re.DOTALL)
+            if json_match:
+                return json_match.group(1).strip()
             
-            # Extract email
-            email_match = re.search(
-                r'EMAIL_START\s*(.*?)\s*EMAIL_END', 
-                generated_text, 
-                re.DOTALL
-            )
-            email_full = email_match.group(1).strip() if email_match else "Failed to parse email"
+            # Fallback: try to extract from any ``` code blocks
+            code_match = re.search(r'```\s*(.*?)\s*```', text, re.DOTALL)
+            if code_match:
+                return code_match.group(1).strip()
             
-            # Validate LinkedIn request length
-            if len(linkedin_request) > 300:
-                logger.warning(f"LinkedIn request too long ({len(linkedin_request)} chars), truncating")
-                linkedin_request = linkedin_request[:297] + "..."
+            # If no code blocks found, return the original text
+            return text.strip()
+            
+        except Exception as e:
+            logger.warning(f"Error extracting JSON from markdown: {e}")
+            return text.strip()
+
+    def _parse_generated_content(self, generated_text: str) -> tuple[str, str]:
+        """Parse JSON generated content to extract LinkedIn request and email."""
+        try:
+            # First extract JSON from markdown code blocks
+            json_text = self._extract_json_from_markdown(generated_text)
+            
+            # Parse JSON response
+            data = json.loads(json_text)
+            
+            linkedin_request = data.get("linkedin_request", "Failed to parse LinkedIn request")
+            email_subject = data.get("email_subject", "")
+            email_body = data.get("email_body", "")
+            
+            # Combine subject and body
+            email_full = f"Subject: {email_subject}\n\n{email_body}" if email_subject else email_body
+            
             
             return linkedin_request, email_full
             
+        except json.JSONDecodeError as e:
+            logger.error(f"Error parsing JSON response: {e}")
+            logger.debug(f"Attempted to parse: {json_text[:200]}...")
+            return "Failed to parse JSON response", "Failed to parse JSON response"
         except Exception as e:
             logger.error(f"Error parsing generated content: {e}")
             return "Failed to parse LinkedIn request", "Failed to parse email"
 
-    def _extract_linkedin_id(self, linkedin_url: str) -> str:
-        """Extract LinkedIn ID from URL with validation."""
-        
-        if "/in/" in linkedin_url:
-            linkedin_id = linkedin_url.split("/in/")[-1].rstrip('/')
-            # Clean up any trailing parameters
-            linkedin_id = linkedin_id.split('?')[0].split('/')[0]
-            return linkedin_id
-        
-        return ""
 
     async def process_row(self, index: int, row: pd.Series, resume_content: str) -> Dict[str, str]:
         """Process a single row with comprehensive error handling."""
@@ -350,19 +311,11 @@ EMAIL_END"""
             logger.info(f"Processing row {index}: {row.get('First Name', '')} {row.get('Last Name', '')}")
             
             # Extract data
-            lead_linkedin = row.get("Lead Linkedin", "")
             company_website = row.get("Website", "")
             company_name = row.get("Company Name", "")
             
-            # Get person information via Google search
-            first_name = row.get("First Name", "").strip()
-            last_name = row.get("Last Name", "").strip()
-            if first_name and last_name:
-                search_query = f"{first_name} {last_name} {company_name}"
-                lead_info = self.get_person_info(search_query)
-            else:
-                logger.warning(f"Row {index}: Missing first/last name")
-                lead_info = ""
+            # Skip person information gathering to save API costs
+            lead_info = ""
             
             # Get company information (with caching)
             if company_name in self.company_cache:
@@ -379,23 +332,22 @@ EMAIL_END"""
                     logger.warning(f"Row {index}: No company website provided")
                     company_info = ""
             
-            # Check if we have enough content
-            if not lead_info.strip() and not company_info.strip():
-                logger.warning(f"Row {index}: No content scraped, skipping LLM generation")
-                return {"LinkedIn Request": "No content available", "Cold Email": "No content available"}
+            # Check if we have company content
+            if not company_info.strip():
+                logger.warning(f"Row {index}: No company info available, skipping LLM generation")
+                return {"LinkedIn Request": "No company info available", "Cold Email": "No company info available"}
             
             # Generate content
             prompt = self.get_prompt(
                 resume=resume_content,
                 lead_title=row.get("Lead Title", ""),
                 company_name=company_name,
-                job_title=row.get("Job Title", ""),
-                person_info=lead_info,
                 company_info=company_info
             )
             
             linkedin_request, email_full = self.generate_content(prompt)
-            
+            print(linkedin_request)
+            print(email_full)
             logger.info(f"✅ Successfully processed row {index}")
             return {"LinkedIn Request": linkedin_request, "Cold Email": email_full}
             
@@ -405,10 +357,10 @@ EMAIL_END"""
 
     async def process_excel_file(self, input_file: str, resume_file: str, output_file: str = None) -> None:
         """Main processing function with improved error handling and progress tracking."""
-        # print("  Starting Excel file processing...")
+        print("  Starting Excel file processing...")
         if output_file is None:
             output_file = f"output_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-        # print(f"  Output will be saved to: {output_file}")
+        print(f"  Output will be saved to: {output_file}")
         
         try:
             # Load input files
@@ -483,7 +435,7 @@ EMAIL_END"""
 
 async def main():
     """Main function with configuration and error handling."""
-    # print("=== STARTING COLD EMAIL GENERATOR ===")
+    print("=== STARTING COLD EMAIL GENERATOR ===")
     logger.info("Application starting...")
     
     # Configuration - Make these configurable
@@ -491,24 +443,24 @@ async def main():
     RESUME_FILE = "S:/Portfolio/ColdEmailGenerator/Resumeforcoldemail.txt"
     OUTPUT_FILE = "enhanced_output.xlsx"
     
-    # print(f"Input file: {INPUT_FILE}")
-    # print(f"Resume file: {RESUME_FILE}")
-    # print(f"Output file: {OUTPUT_FILE}")
+    print(f"Input file: {INPUT_FILE}")
+    print(f"Resume file: {RESUME_FILE}")
+    print(f"Output file: {OUTPUT_FILE}")
     
     try:
-        # print("Checking if files exist...")
+        print("Checking if files exist...")
         if not os.path.exists(INPUT_FILE):
             raise FileNotFoundError(f"Input file not found: {INPUT_FILE}")
         if not os.path.exists(RESUME_FILE):
             raise FileNotFoundError(f"Resume file not found: {RESUME_FILE}")
-        # print("✅ All input files found")
+        print("✅ All input files found")
         
         # print("Initializing OutreachGenerator...")
         # Initialize the generator
         generator = OutreachGenerator()
-        # print("✅ OutreachGenerator initialized")
+        print("✅ OutreachGenerator initialized")
         
-        # print("Starting file processing...")
+        print("Starting file processing...")
         # Process the files
         await generator.process_excel_file(INPUT_FILE, RESUME_FILE, OUTPUT_FILE)
         print("✅ Processing completed successfully!")
